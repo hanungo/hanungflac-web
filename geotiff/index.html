@@ -1,0 +1,888 @@
+<!DOCTYPE html>
+<html lang="id"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GeoTIFF → ASC · Konverter DEM</title>
+<style>
+ :root{--bg:#0f172a;--panel:#1e293b;--panel2:#273449;--line:#334155;--txt:#e2e8f0;--muted:#94a3b8;--accent:#38bdf8;--ok:#22c55e;--warn:#f59e0b;--danger:#ef4444}
+ *{box-sizing:border-box}
+ body{margin:0;font-family:system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--txt);font-size:14px;line-height:1.5}
+ header{padding:16px 22px;background:linear-gradient(90deg,#0ea5e9,#0369a1);color:#fff}
+ header h1{margin:0;font-size:19px}header p{margin:3px 0 0;font-size:12.5px;opacity:.92}
+ .wrap{max-width:940px;margin:0 auto;padding:18px}
+ .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+ @media(max-width:760px){.grid{grid-template-columns:1fr}}
+ .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+ h2{font-size:15px;margin:0 0 10px;color:var(--accent)}
+ .drop{border:2px dashed var(--line);border-radius:12px;padding:26px 16px;text-align:center;color:var(--muted);cursor:pointer;transition:.15s;background:var(--panel2)}
+ .drop.hot{border-color:var(--accent);color:var(--txt);background:#20344a}
+ .drop b{color:var(--txt)}
+ label{display:block;font-size:12px;color:var(--muted);margin:10px 0 4px}
+ input,select{width:100%;padding:9px;background:var(--panel2);border:1px solid var(--line);border-radius:7px;color:var(--txt);font-size:13px}
+ input:focus,select:focus{outline:none;border-color:var(--accent)}
+ .row{display:flex;gap:10px}.row>div{flex:1}
+ button{padding:10px 14px;border:none;border-radius:8px;font-size:13.5px;font-weight:600;cursor:pointer;background:var(--accent);color:#06263a}
+ button:hover{filter:brightness(1.08)}button:disabled{opacity:.5;cursor:not-allowed}
+ button.sec{background:var(--panel2);color:var(--txt);border:1px solid var(--line);font-weight:500}
+ table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:4px}
+ td{padding:3px 4px;vertical-align:top}td:first-child{color:var(--muted);width:46%}
+ .msg{font-size:12.5px;margin-top:10px;min-height:18px}.err{color:var(--danger)}.ok{color:var(--ok)}.warn{color:var(--warn)}
+ .muted{color:var(--muted);font-size:12px}
+ code{background:#0b1220;padding:1px 5px;border-radius:4px;font-size:11.5px;color:#93c5fd}
+ canvas{width:100%;height:auto;border:1px solid var(--line);border-radius:8px;background:#0b1220;image-rendering:pixelated}
+ .prog{height:9px;background:#273449;border:1px solid #334155;border-radius:6px;overflow:hidden;margin:8px 0}
+ .prog>i{display:block;height:100%;width:0;background:linear-gradient(90deg,#0ea5e9,#38bdf8);transition:width .1s}
+ .hidden{display:none}
+ .pill{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;background:#0b3a52;border:1px solid #0ea5e9;color:#bae6fd;margin-left:6px}
+</style></head>
+<body>
+<header>
+  <h1>GeoTIFF → ASC · Konverter DEM</h1>
+  <p>Ubah DEM format GeoTIFF (.tif/.tiff) menjadi ESRI ASCII Grid (.asc) untuk diimpor ke alat FLAC. Berjalan penuh di browser — tanpa server, tanpa unggah.</p>
+</header>
+<div class="wrap">
+
+  <div class="card">
+    <div id="drop" class="drop">
+      <div style="font-size:30px;margin-bottom:6px">🗺️</div>
+      <div><b>Tarik berkas GeoTIFF ke sini</b> atau klik untuk memilih</div>
+      <div class="muted" style="margin-top:4px">Mendukung .tif / .tiff — 1 band elevasi, kompresi none / LZW / Deflate / PackBits, tipe integer atau float.</div>
+      <input id="file" type="file" accept=".tif,.tiff,image/tiff" class="hidden">
+    </div>
+    <div class="prog hidden" id="prog"><i id="progBar"></i></div>
+    <div class="msg" id="msg"></div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Metadata terdeteksi</h2>
+      <table id="meta"><tr><td>—</td><td class="muted">Belum ada berkas.</td></tr></table>
+    </div>
+    <div class="card">
+      <h2>Pratinjau elevasi <span id="pvPill" class="pill hidden">grayscale</span></h2>
+      <canvas id="cv" width="10" height="10"></canvas>
+      <div class="muted" id="pvLbl" style="margin-top:6px">Rendah = gelap, tinggi = terang. NoData = merah.</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Resolusi keluaran (downsampling)</h2>
+    <p class="muted" style="margin:0 0 8px">Alat FLAC memakai mesh kontinum kasar (± puluhan zona), dan pengurai <code>.asc</code>-nya memuat seluruh berkas ke satu string memori (batas ± 500&nbsp;MB). DEM/DSM resolusi tinggi menghasilkan berkas raksasa yang <b>gagal diimpor</b> ("Header DEM tidak valid"). Perkecil di sini — rata-rata blok (mean) yang sadar NoData.</p>
+    <div class="grid">
+      <div>
+        <label>Mode resolusi</label>
+        <select id="dsMode">
+          <option value="auto">Auto — target maks sisi (disarankan)</option>
+          <option value="cell">Cellsize keluaran (m)</option>
+          <option value="factor">Faktor downsample (×N blok)</option>
+          <option value="native">Native — tanpa perkecil (⚠ bisa raksasa)</option>
+        </select>
+      </div>
+      <div>
+        <label id="dsTargLbl">Target maksimum sisi (kolom/baris)</label>
+        <input id="dsTarg" type="text" value="1500">
+      </div>
+    </div>
+    <div id="outSpec" style="margin-top:10px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:9px 11px;font-size:12.5px">—</div>
+  </div>
+
+  <div class="card">
+    <h2>Opsi keluaran</h2>
+    <div class="grid">
+      <div>
+        <label>Band (jika multi-band)</label>
+        <select id="band"><option value="0">Band 1</option></select>
+        <label>Referensi titik sudut/tengah sel</label>
+        <select id="corner">
+          <option value="corner">xllcorner / yllcorner (sudut kiri-bawah) — standar</option>
+          <option value="center">xllcenter / yllcenter (pusat sel)</option>
+        </select>
+        <label>Angka desimal nilai elevasi</label>
+        <input id="dec" type="number" min="0" max="6" step="1" value="3">
+      </div>
+      <div>
+        <label>NODATA_value pada keluaran</label>
+        <input id="nodata" type="text" value="-9999">
+        <label>Ganti nilai NoData sumber (opsional, kosong = pakai deteksi)</label>
+        <input id="srcNodata" type="text" placeholder="mis. -32767 atau 3.4e38">
+        <label>Faktor skala Z (mis. cm→m = 0.01; kosong/1 = tetap)</label>
+        <input id="zscale" type="text" placeholder="1">
+        <label>Geser vertikal Δz (m) — ditambahkan setelah skala (kosong/0 = tetap)</label>
+        <input id="zshift" type="text" placeholder="0">
+      </div>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <div><button id="convert" disabled>⬇ Unduh .asc</button></div>
+      <div><button id="convertDxf" class="sec" disabled>⬇ Unduh .dxf</button></div>
+      <div style="max-width:210px"><select id="dxfKind">
+        <option value="point">DXF: Titik 3D (POINT)</option>
+        <option value="face">DXF: Permukaan mesh (3DFACE)</option>
+      </select></div>
+      <div style="max-width:130px"><button id="copyHdr" class="sec" disabled>Salin header</button></div>
+    </div>
+    <div class="muted" style="margin-top:6px">DXF memakai georeferensi sama dengan .asc (koordinat dunia di pusat sel) — bisa dibuka di AutoCAD/Civil3D/Surpac, dan bisa diimpor balik ke alat FLAC via panel "Konversi DXF → DEM". <b>POINT</b> = point-cloud ber-elevasi (kode 30). <b>3DFACE</b> = permukaan TIN. NoData dilewati.</div>
+    <div class="msg" id="msg2"></div>
+  </div>
+
+  <div class="card">
+    <h2>Bandingkan 2 DEM (.asc) — beda elevasi &amp; volume cut/fill</h2>
+    <p class="muted" style="margin:0 0 8px">Hitung <b>DEM of Difference</b> (Δz = B − A) antara dua permukaan .asc — mis. survei lama vs baru, atau desain vs aktual. Menghasilkan volume galian (cut) &amp; timbunan (fill), statistik, pratinjau berwarna, dan berkas beda .asc. B otomatis di-<i>resample</i> (bilinear) ke grid A bila beda extent/cellsize.</p>
+    <div class="grid">
+      <div>
+        <label>DEM A — acuan / lama (.asc)</label>
+        <input id="cmpA" type="file" accept=".asc,.txt,.grd">
+        <div class="muted" id="cmpAInfo" style="margin-top:4px">—</div>
+      </div>
+      <div>
+        <label>DEM B — pembanding / baru (.asc)</label>
+        <input id="cmpB" type="file" accept=".asc,.txt,.grd">
+        <div class="muted" id="cmpBInfo" style="margin-top:4px">—</div>
+      </div>
+    </div>
+    <div class="grid" style="margin-top:6px">
+      <div>
+        <label>Ambang abaikan |Δz| &lt; (m) — buang derau</label>
+        <input id="cmpTol" type="text" value="0.05">
+      </div>
+      <div>
+        <label>Angka desimal keluaran</label>
+        <input id="cmpDec" type="number" min="0" max="6" step="1" value="3">
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <div><button id="cmpRun" disabled>▶ Bandingkan</button></div>
+      <div><button id="cmpDlAsc" class="sec" disabled>⬇ Beda Δz (.asc)</button></div>
+    </div>
+    <div class="msg" id="cmpMsg"></div>
+    <div id="cmpStat" style="display:none;margin-top:8px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:12.5px"></div>
+    <div style="margin-top:10px"><canvas id="cmpCv" width="10" height="10"></canvas>
+      <div class="muted" id="cmpLbl" style="margin-top:6px">Merah = naik (Δz&gt;0, timbunan) · Biru = turun (Δz&lt;0, galian) · Abu = tak berubah/NoData.</div></div>
+  </div>
+
+  <div class="card">
+    <h2>Gabung 2 DEM (.asc) — mosaic / tempel</h2>
+    <p class="muted" style="margin:0 0 8px">Satukan dua permukaan .asc menjadi satu grid seluas gabungan keduanya — mis. menyambung dua petak survei, atau menempel patch DEM baru ke atas DEM dasar. Grid keluaran mengikuti cellsize &amp; fase grid A; B otomatis di-<i>resample</i> (bilinear) bila beda cellsize/alignment.</p>
+    <div class="grid">
+      <div>
+        <label>DEM A — dasar (.asc)</label>
+        <input id="mrgA" type="file" accept=".asc,.txt,.grd">
+        <div class="muted" id="mrgAInfo" style="margin-top:4px">—</div>
+      </div>
+      <div>
+        <label>DEM B — tempel/petak kedua (.asc)</label>
+        <input id="mrgB" type="file" accept=".asc,.txt,.grd">
+        <div class="muted" id="mrgBInfo" style="margin-top:4px">—</div>
+      </div>
+    </div>
+    <div class="grid" style="margin-top:6px">
+      <div>
+        <label>Bila bertampalan (overlap), pakai</label>
+        <select id="mrgPolicy">
+          <option value="bover">B menimpa A (patch/terbaru menang)</option>
+          <option value="aover">A menimpa B (dasar dipertahankan)</option>
+          <option value="mean">Rata-rata (A+B)/2</option>
+          <option value="max">Maksimum (elevasi tertinggi)</option>
+          <option value="min">Minimum (elevasi terendah)</option>
+        </select>
+      </div>
+      <div>
+        <label>Angka desimal keluaran</label>
+        <input id="mrgDec" type="number" min="0" max="6" step="1" value="3">
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <div><button id="mrgRun" disabled>▶ Gabungkan</button></div>
+      <div><button id="mrgDlAsc" class="sec" disabled>⬇ Hasil gabung (.asc)</button></div>
+    </div>
+    <div class="msg" id="mrgMsg"></div>
+    <div id="mrgStat" style="display:none;margin-top:8px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:12.5px"></div>
+    <div style="margin-top:10px"><canvas id="mrgCv" width="10" height="10"></canvas>
+      <div class="muted" id="mrgLbl" style="margin-top:6px">Rendah = gelap, tinggi = terang · Abu tua = NoData.</div></div>
+  </div>
+
+  <div class="card">
+    <h2>Catatan</h2>
+    <p class="muted" style="margin:0">Konverter membaca georeferensi dari tag <code>ModelPixelScale</code> + <code>ModelTiepoint</code> atau <code>ModelTransformation</code>. Grid ESRI ASCII mengharuskan <b>sel persegi</b> (Δx = Δy); bila piksel non-persegi, tool memberi peringatan dan memakai Δx sebagai <code>cellsize</code>. Sumbu Y dibalik agar baris pertama = elevasi paling utara (sesuai konvensi .asc). Sistem proyeksi (CRS) tidak dikonversi — pastikan GeoTIFF sudah dalam koordinat metrik (mis. UTM) yang sama dengan model lereng Anda.</p>
+  </div>
+
+</div>
+<script>
+/* ================= util ================= */
+const $=id=>document.getElementById(id);
+const enc=new TextEncoder();
+function setProg(p){const el=$('prog'),b=$('progBar'); if(p==null){el.classList.add('hidden');return;} el.classList.remove('hidden'); b.style.width=Math.max(0,Math.min(100,p))+'%';}
+function say(el,txt,cls){const e=$(el); e.className='msg '+(cls||''); e.innerHTML=txt;}
+function esc(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+
+/* ================= TIFF/GeoTIFF reader ================= */
+const T={W:256,H:257,BPS:258,COMP:259,PHOTO:262,STRIP_OFF:273,SPP:277,ROWS_STRIP:278,STRIP_BC:279,
+  PLANAR:284,PREDICT:317,TILE_W:322,TILE_H:323,TILE_OFF:324,TILE_BC:325,SAMPLE_FMT:339,
+  PIXSCALE:33550,TIEPOINT:33922,TRANSFORM:34264,GEOKEYS:34735,GDAL_NODATA:42113,GDAL_META:42112};
+const TYPE_SIZE={1:1,2:1,3:2,4:4,5:8,6:1,7:1,8:2,9:4,10:8,11:4,12:8,16:8,17:8,18:8};
+
+function readTiff(buf){
+  const dv=new DataView(buf); const b0=dv.getUint8(0),b1=dv.getUint8(1);
+  let le; if(b0===0x49&&b1===0x49)le=true; else if(b0===0x4D&&b1===0x4D)le=false; else throw new Error('Bukan berkas TIFF (byte order tidak dikenal).');
+  const magic=dv.getUint16(2,le); const big=magic===43;
+  if(magic!==42&&magic!==43)throw new Error('Magic TIFF tidak valid ('+magic+').');
+  if(big)throw new Error('BigTIFF belum didukung. Ekspor ulang sebagai TIFF klasik/GeoTIFF standar.');
+  let ifdOff=dv.getUint32(4,le);
+  const rd=(off,type)=>{ switch(type){
+    case 1:case 2:case 6:case 7:return dv.getUint8(off);
+    case 3:return dv.getUint16(off,le); case 8:return dv.getInt16(off,le);
+    case 4:return dv.getUint32(off,le); case 9:return dv.getInt32(off,le);
+    case 11:return dv.getFloat32(off,le); case 12:return dv.getFloat64(off,le);
+    case 5:return dv.getUint32(off,le)/dv.getUint32(off+4,le);
+    case 10:return dv.getInt32(off,le)/dv.getInt32(off+4,le);
+    default:return dv.getUint8(off);} };
+  const n=dv.getUint16(ifdOff,le); const tags={};
+  for(let i=0;i<n;i++){ const e=ifdOff+2+i*12;
+    const tag=dv.getUint16(e,le), type=dv.getUint16(e+2,le), cnt=dv.getUint32(e+4,le);
+    const sz=(TYPE_SIZE[type]||1)*cnt; let vOff=e+8; if(sz>4)vOff=dv.getUint32(e+8,le);
+    const vals=[]; const es=TYPE_SIZE[type]||1;
+    for(let k=0;k<cnt;k++)vals.push(rd(vOff+k*es,type));
+    tags[tag]={type,cnt,vals};
+  }
+  const g=(t,d)=>tags[t]?tags[t].vals:d;
+  const g1=(t,d)=>tags[t]?tags[t].vals[0]:d;
+  const W=g1(T.W), H=g1(T.H), spp=g1(T.SPP,1);
+  const bps=g(T.BPS,[8]); const comp=g1(T.COMP,1); const predict=g1(T.PREDICT,1);
+  const sfmt=g(T.SAMPLE_FMT,[1]); const planar=g1(T.PLANAR,1);
+  const tiled=!!tags[T.TILE_W];
+  // georef
+  const scale=g(T.PIXSCALE,null), tie=g(T.TIEPOINT,null), tform=g(T.TRANSFORM,null);
+  let dx=null,dy=null,ox=null,oy=null,rot=false;
+  if(tform){ dx=tform[0]; dy=-tform[5]; ox=tform[3]; oy=tform[7]; if(tform[1]||tform[4])rot=true; }
+  else if(scale&&tie){ dx=scale[0]; dy=scale[1];
+    const I=tie[0],J=tie[1],X=tie[3],Y=tie[4]; ox=X-I*scale[0]; oy=Y+J*scale[1]; }
+  // nodata
+  let nod=null; if(tags[T.GDAL_NODATA]){ const s=tags[T.GDAL_NODATA].vals.map(v=>String.fromCharCode(v)).join('').replace(/\0/g,'').trim(); const f=parseFloat(s); if(isFinite(f))nod=f; }
+  return {dv,le,tags,W,H,spp,bps,comp,predict,sfmt,planar,tiled,dx,dy,ox,oy,rot,nod,
+    strip:{off:g(T.STRIP_OFF),bc:g(T.STRIP_BC),rows:g1(T.ROWS_STRIP,H)},
+    tile:{off:g(T.TILE_OFF),bc:g(T.TILE_BC),w:g1(T.TILE_W),h:g1(T.TILE_H)}};
+}
+
+/* ---- decompress ---- */
+function packbits(src){ const out=[]; let i=0; while(i<src.length){ let n=src[i++]; if(n>128)n-=256;
+  if(n>=0){ for(let k=0;k<=n;k++)out.push(src[i++]); } else if(n!==-128){ const v=src[i++]; for(let k=0;k<1-n;k++)out.push(v); } }
+  return new Uint8Array(out); }
+function lzw(src){ // TIFF LZW, MSB-first, EarlyChange=1
+  const CLEAR=256,EOI=257; let dict=[],dictLen=0,codeW=9; const out=[];
+  const init=()=>{ dict=new Array(4096); for(let i=0;i<256;i++)dict[i]=[i]; dictLen=258; codeW=9; };
+  init();
+  let bitBuf=0,bitCnt=0,pos=0,prev=null;
+  const next=()=>{ while(bitCnt<codeW){ if(pos>=src.length)return EOI; bitBuf=(bitBuf<<8)|src[pos++]; bitCnt+=8; }
+    bitCnt-=codeW; return (bitBuf>>>bitCnt)&((1<<codeW)-1); };
+  let code;
+  while((code=next())!==EOI){
+    if(code===CLEAR){ init(); prev=null; continue; }
+    let entry;
+    if(prev===null){ entry=dict[code]; }
+    else{
+      if(code<dictLen)entry=dict[code];
+      else entry=dict[prev].concat(dict[prev][0]);
+      dict[dictLen++]=dict[prev].concat(entry[0]);
+      if(dictLen+1>=(1<<codeW)&&codeW<12)codeW++;
+    }
+    for(let k=0;k<entry.length;k++)out.push(entry[k]);
+    prev=code;
+  }
+  return new Uint8Array(out);
+}
+async function inflate(src){ // zlib stream (TIFF Deflate)
+  if(typeof DecompressionStream==='undefined')throw new Error('Deflate butuh DecompressionStream (Chrome/Edge/Firefox terbaru).');
+  const ds=new DecompressionStream('deflate');
+  const stream=new Blob([src]).stream().pipeThrough(ds);
+  const ab=await new Response(stream).arrayBuffer(); return new Uint8Array(ab);
+}
+async function decodeBlock(bytes,comp){
+  if(comp===1)return bytes;
+  if(comp===5)return lzw(bytes);
+  if(comp===32773)return packbits(bytes);
+  if(comp===8||comp===32946)return await inflate(bytes);
+  throw new Error('Kompresi TIFF '+comp+' belum didukung (dukungan: none/LZW/Deflate/PackBits).');
+}
+// Floating-point predictor (TIFF predictor=3): byte-plane horizontal differencing + deshuffle.
+// Operates on a block's decoded bytes, row by row, returning a corrected copy ready to parse as floats.
+function deFloatPredict(u8, nRows, samplesPerRow, bytesPer, spp){
+  const out=new Uint8Array(u8.length);
+  const rowBytes=samplesPerRow*bytesPer;
+  const wc=samplesPerRow; // number of samples in a row
+  for(let r=0;r<nRows;r++){
+    const base=r*rowBytes; if(base+rowBytes>u8.length)break;
+    // 1) horizontal byte accumulation, stride = spp
+    const acc=u8.slice(base,base+rowBytes);
+    for(let i=spp;i<rowBytes;i++)acc[i]=(acc[i]+acc[i-spp])&0xff;
+    // 2) deshuffle byte planes back to native little-endian sample bytes
+    for(let i=0;i<wc;i++)for(let b=0;b<bytesPer;b++)
+      out[base + bytesPer*i + b] = acc[(bytesPer-b-1)*wc + i];
+  }
+  return out;
+}
+
+/* ---- read raster, streaming + block-decimate by `stride` into a reduced Float32 grid ----
+   Never allocates the full-resolution array, so huge DEMs don't blow the memory budget.
+   Returns { W2, H2, data(Float32), NOD }. stride>=1 (1 = native). NoData excluded from block mean. */
+async function readRaster(t,band,stride){
+  const {W,H,spp,bps,sfmt,comp,predict,tiled,le}=t; stride=Math.max(1,Math.round(stride||1));
+  const bs=bps[0]||8; const sf=sfmt[0]||1; const bytesPer=bs/8;
+  const W2=Math.max(1,Math.ceil(W/stride)), H2=Math.max(1,Math.ceil(H/stride));
+  const sum=new Float64Array(W2*H2), cnt=new Uint32Array(W2*H2);
+  const srcNod=t.nod;
+  const isNodRaw=v=>(!isFinite(v))||(Math.abs(v)>1e37)||(srcNod!=null&&Math.abs(v-srcNod)<1e-6);
+  const parseSample=(dvv,off)=>{
+    if(sf===3){ if(bs===32)return dvv.getFloat32(off,le); if(bs===64)return dvv.getFloat64(off,le); }
+    if(sf===2){ if(bs===8)return dvv.getInt8(off); if(bs===16)return dvv.getInt16(off,le); if(bs===32)return dvv.getInt32(off,le); }
+    if(bs===8)return dvv.getUint8(off); if(bs===16)return dvv.getUint16(off,le); if(bs===32)return dvv.getUint32(off,le);
+    throw new Error('Kombinasi BitsPerSample='+bs+' / SampleFormat='+sf+' belum didukung.');
+  };
+  const add=(yy,xx,v)=>{ if(isNodRaw(v))return; const i=Math.floor(yy/stride)*W2+Math.floor(xx/stride); sum[i]+=v; cnt[i]++; };
+  if(!tiled){
+    const off=t.strip.off, bc=t.strip.bc, rowsPer=t.strip.rows||H;
+    let row=0;
+    for(let s=0;s<off.length;s++){
+      let raw=new Uint8Array(t.dv.buffer, off[s], bc[s]);
+      let dec=await decodeBlock(raw,comp);
+      const rowsHere=Math.min(rowsPer,H-row);
+      if(predict===3)dec=deFloatPredict(dec,rowsHere,W*spp,bytesPer,spp);
+      const dvv=new DataView(dec.buffer,dec.byteOffset,dec.byteLength);
+      const rowBytes=W*spp*bytesPer;
+      for(let r=0;r<rowsHere;r++){
+        const yy=row+r; const rowStart=r*rowBytes;
+        if(predict===2){ const line=new Float64Array(W*spp);
+          for(let x=0;x<W*spp;x++)line[x]=parseSample(dvv,rowStart+x*bytesPer);
+          for(let sp=0;sp<spp;sp++)for(let x=1;x<W;x++)line[x*spp+sp]+=line[(x-1)*spp+sp];
+          for(let x=0;x<W;x++)add(yy,x,line[x*spp+band]);
+        } else {
+          for(let x=0;x<W;x++)add(yy,x,parseSample(dvv,rowStart+(x*spp+band)*bytesPer));
+        }
+      }
+      row+=rowsHere; if(row>=H)break;
+      setProg(10+70*row/H);
+    }
+  } else {
+    const tw=t.tile.w, th=t.tile.h, off=t.tile.off, bc=t.tile.bc;
+    const tilesX=Math.ceil(W/tw), tilesY=Math.ceil(H/th);
+    let idx=0;
+    for(let ty=0;ty<tilesY;ty++)for(let tx=0;tx<tilesX;tx++){
+      let raw=new Uint8Array(t.dv.buffer, off[idx], bc[idx]); idx++;
+      let dec=await decodeBlock(raw,comp);
+      if(predict===3)dec=deFloatPredict(dec,th,tw*spp,bytesPer,spp);
+      const dvv=new DataView(dec.buffer,dec.byteOffset,dec.byteLength);
+      const rowBytes=tw*spp*bytesPer;
+      for(let r=0;r<th;r++){ const yy=ty*th+r; if(yy>=H)break;
+        if(predict===2){ const line=new Float64Array(tw*spp);
+          for(let x=0;x<tw*spp;x++)line[x]=parseSample(dvv,r*rowBytes+x*bytesPer);
+          for(let sp=0;sp<spp;sp++)for(let x=1;x<tw;x++)line[x*spp+sp]+=line[(x-1)*spp+sp];
+          for(let x=0;x<tw;x++){const xx=tx*tw+x; if(xx<W)add(yy,xx,line[x*spp+band]);}
+        } else {
+          for(let x=0;x<tw;x++){const xx=tx*tw+x; if(xx<W)add(yy,xx,parseSample(dvv,r*rowBytes+(x*spp+band)*bytesPer));}
+        }
+      }
+      setProg(10+70*idx/(tilesX*tilesY));
+    }
+  }
+  const NOD=Number.NEGATIVE_INFINITY; const data=new Float32Array(W2*H2);
+  for(let i=0;i<data.length;i++)data[i]= cnt[i]>0 ? sum[i]/cnt[i] : NOD;
+  return {W2,H2,data,NOD};
+}
+// pick a read-stride so the reduced grid stays within a safe memory budget
+function readStrideFor(W,H,budgetCells){ const b=budgetCells||6e6; return Math.max(1,Math.ceil(Math.sqrt((W*H)/b))); }
+
+/* ================= app state ================= */
+let TIFF=null, RASTER=null, STATS=null, RASTER_NOD=Number.NEGATIVE_INFINITY;
+
+function fmt(v,d){ if(v==null||!isFinite(v))return '—'; return Number(v).toLocaleString('en-US',{maximumFractionDigits:d==null?4:d}); }
+
+function renderMeta(){
+  const t=TIFF; const rows=[];
+  rows.push(['Dimensi asli (kolom × baris)', (t.nativeW||t.W)+' × '+(t.nativeH||t.H)+' px']);
+  if(t.readStride>1)rows.push(['Pembacaan (memori)', '1:'+t.readStride+' rata-rata blok → grid kerja '+t.W+' × '+t.H]);
+  rows.push(['Jumlah band (SamplesPerPixel)', t.spp]);
+  rows.push(['Bit / SampleFormat', (t.bps[0])+'-bit · '+({1:'unsigned int',2:'signed int',3:'float'}[t.sfmt[0]]||'?')]);
+  rows.push(['Kompresi', ({1:'None',5:'LZW',8:'Deflate',32946:'Deflate',32773:'PackBits'}[t.comp]||('kode '+t.comp))+(t.predict===2?' + predictor':'')]);
+  rows.push(['Susunan', t.tiled?('Tiled '+t.tile.w+'×'+t.tile.h):('Stripped, '+t.strip.rows+' baris/strip')]);
+  if(t.dx!=null){
+    const dxn=(t.nativeDx!=null?t.nativeDx:t.dx);
+    rows.push(['Ukuran sel Δx / Δy'+(t.readStride>1?' (grid kerja)':''), fmt(t.dx,4)+' / '+fmt(t.dy,4)+' m'+(Math.abs(t.dx-t.dy)>1e-6?' ⚠ non-persegi':'')+(t.readStride>1?(' · asli '+fmt(dxn,4)+' m'):'')]);
+    rows.push(['Origin sudut kiri-atas (X, Y)', fmt(t.ox,3)+', '+fmt(t.oy,3)]);
+  } else rows.push(['Georeferensi', '⚠ tidak ditemukan (ModelPixelScale/Tiepoint/Transformation)']);
+  if(t.rot)rows.push(['Rotasi', '⚠ ada komponen rotasi — .asc tidak mendukung, akan diabaikan']);
+  rows.push(['NoData (sumber)', t.nod!=null?fmt(t.nod,4):'tidak dinyatakan (tag GDAL_NODATA)']);
+  if(STATS){ rows.push(['Elevasi min / maks (valid)', fmt(STATS.min,3)+' / '+fmt(STATS.max,3)]);
+    rows.push(['Sel valid / NoData', fmt(STATS.valid,0)+' / '+fmt(STATS.nod,0)]); }
+  $('meta').innerHTML=rows.map(r=>'<tr><td>'+esc(r[0])+'</td><td>'+r[1]+'</td></tr>').join('');
+  // band selector
+  const bs=$('band'); bs.innerHTML=''; for(let i=0;i<t.spp;i++){const o=document.createElement('option');o.value=i;o.textContent='Band '+(i+1);bs.appendChild(o);}
+  if(t.nod!=null&&!$('srcNodata').value)$('srcNodata').placeholder='deteksi: '+t.nod;
+}
+
+function computeStats(raster,srcNod){
+  let mn=Infinity,mx=-Infinity,valid=0,nc=0;
+  const isNod=v=>{ if(srcNod!=null&&Math.abs(v-srcNod)<1e-6)return true; if(!isFinite(v))return true; if(Math.abs(v)>1e37)return true; return false; };
+  for(let i=0;i<raster.length;i++){const v=raster[i]; if(isNod(v)){nc++;continue;} valid++; if(v<mn)mn=v; if(v>mx)mx=v;}
+  return {min:mn,max:mx,valid,nod:nc,isNod};
+}
+
+function drawPreview(){
+  const t=TIFF,raster=RASTER,s=STATS; const cv=$('cv'); const maxW=460;
+  const scale=Math.min(1,maxW/t.W); const cw=Math.max(1,Math.round(t.W*scale)),ch=Math.max(1,Math.round(t.H*scale));
+  cv.width=cw; cv.height=ch; const ctx=cv.getContext('2d'); const img=ctx.createImageData(cw,ch);
+  const rng=(s.max-s.min)||1;
+  for(let y=0;y<ch;y++)for(let x=0;x<cw;x++){
+    const sx=Math.min(t.W-1,Math.floor(x/scale)), sy=Math.min(t.H-1,Math.floor(y/scale));
+    const v=raster[sy*t.W+sx]; const p=(y*cw+x)*4;
+    if(s.isNod(v)){ img.data[p]=200;img.data[p+1]=40;img.data[p+2]=40; }
+    else { const g=Math.round(255*(v-s.min)/rng); img.data[p]=g;img.data[p+1]=g;img.data[p+2]=g; }
+    img.data[p+3]=255;
+  }
+  ctx.putImageData(img,0,0);
+  $('pvPill').classList.remove('hidden');
+  $('pvLbl').textContent='Rendah = gelap, tinggi = terang. NoData = merah. Grid kerja '+t.W+'×'+t.H+(t.readStride>1?(' (dari '+t.nativeW+'×'+t.nativeH+' asli, 1:'+t.readStride+')'):'')+', ditampilkan '+cw+'×'+ch+'.';
+}
+
+async function applyStride(t,band){
+  // fold the memory-safety read-stride into the working grid; keep native values for display
+  const stride=readStrideFor(t.nativeW,t.nativeH);
+  t.readStride=stride;
+  const red=await readRaster(t,band,stride);
+  RASTER=red.data; RASTER_NOD=red.NOD;
+  t.W=red.W2; t.H=red.H2;
+  const dx0=(t.nativeDx!=null)?t.nativeDx:1, dy0=(t.nativeDy!=null)?t.nativeDy:1;
+  t.dx=(t.nativeDx!=null)?dx0*stride:null;
+  t.dy=(t.nativeDy!=null)?dy0*stride:null;
+  // t.ox, t.oy (top-left corner) unchanged by decimation
+}
+
+async function loadFile(file){
+  say('msg','⏳ Membaca '+esc(file.name)+'…'); setProg(4);
+  $('convert').disabled=true; $('convertDxf').disabled=true; $('copyHdr').disabled=true;
+  try{
+    let buf;
+    try{ buf=await file.arrayBuffer(); }
+    catch(e){ throw new Error('Berkas terlalu besar untuk dimuat browser ('+ (file.size/1073741824).toFixed(2) +' GB). Kompres GeoTIFF (LZW/Deflate) atau perkecil resolusinya di GIS lalu ekspor ulang.'); }
+    setProg(8);
+    TIFF=readTiff(buf);
+    // record native dims/georef, then read at a memory-safe stride
+    TIFF.nativeW=TIFF.W; TIFF.nativeH=TIFF.H; TIFF.nativeDx=TIFF.dx; TIFF.nativeDy=TIFF.dy;
+    const band=Math.min(+($('band').value||0),TIFF.spp-1);
+    await applyStride(TIFF,band); setProg(85);
+    const srcNod=parseFloat($('srcNodata').value); STATS=computeStats(RASTER, isFinite(srcNod)?srcNod:TIFF.nod);
+    renderMeta(); drawPreview(); syncDsLabel(); updateOutSpec(); setProg(100);
+    let warn=''; if(TIFF.nativeDx==null)warn=' <span class="warn">Georeferensi tak ada — keluaran memakai cellsize=1, origin=0. Perbaiki manual bila perlu.</span>';
+    else if(Math.abs(TIFF.dx-TIFF.dy)>1e-6)warn=' <span class="warn">Piksel non-persegi — memakai Δx sebagai cellsize.</span>';
+    let dnote=''; if(TIFF.readStride>1)dnote=' <span class="warn">DEM besar — dibaca-ulang pada 1:'+TIFF.readStride+' (rata-rata blok) agar muat memori: grid '+TIFF.W+'×'+TIFF.H+', cellsize '+fmt(TIFF.dx,3)+' m.</span>';
+    say('msg','✔ Terbaca: <b>'+TIFF.nativeW+'×'+TIFF.nativeH+'</b> px, '+(TIFF.bps[0])+'-bit '+({1:'uint',2:'int',3:'float'}[TIFF.sfmt[0]]||'')+'.'+warn+dnote,'ok');
+    $('convert').disabled=false; $('convertDxf').disabled=false; $('copyHdr').disabled=false;
+    setTimeout(()=>setProg(null),600);
+  }catch(e){ setProg(null); say('msg','✗ Gagal membaca: '+esc(e.message),'err'); console.error(e); TIFF=null; }
+}
+
+/* ---- downsampling: choose integer block factor from mode ---- */
+function chooseFactor(){
+  const t=TIFF; if(!t)return 1;
+  const mode=$('dsMode').value; const dx=(t.dx!=null&&t.dx>0)?t.dx:1;
+  const maxSide=Math.max(t.W,t.H); let f=1;
+  if(mode==='native')f=1;
+  else if(mode==='auto'){ const targ=Math.max(50,Math.round(parseFloat($('dsTarg').value)||1500)); f=Math.max(1,Math.ceil(maxSide/targ)); }
+  else if(mode==='cell'){ const cs=parseFloat($('dsTarg').value); f=(isFinite(cs)&&cs>0)?Math.max(1,Math.round(cs/dx)):1; }
+  else if(mode==='factor'){ const n=parseFloat($('dsTarg').value); f=(isFinite(n)&&n>=1)?Math.round(n):1; }
+  return Math.max(1,Math.min(f, maxSide)); // never collapse below 1x1
+}
+// block-average (mean of valid cells); block all-nodata -> nodata sentinel value
+function downsampleGrid(raster,W,H,f,isNod){
+  if(f<=1)return {W,H,data:raster};
+  const W2=Math.max(1,Math.floor(W/f)), H2=Math.max(1,Math.floor(H/f));
+  const out=new Float64Array(W2*H2); const NOD=Number.NEGATIVE_INFINITY;
+  for(let r=0;r<H2;r++)for(let c=0;c<W2;c++){
+    let sum=0,n=0;
+    for(let dr=0;dr<f;dr++){ const rr=r*f+dr; if(rr>=H)break;
+      for(let dc=0;dc<f;dc++){ const cc=c*f+dc; if(cc>=W)break;
+        const v=raster[rr*W+cc]; if(!isNod(v)){sum+=v;n++;} } }
+    out[r*W2+c]= n>0 ? sum/n : NOD;
+  }
+  return {W:W2,H:H2,data:out,NOD};
+}
+function effGridInfo(){ // {W,H,cs,f}
+  const t=TIFF; const f=chooseFactor(); const dx=(t.dx!=null)?t.dx:1;
+  return {W:Math.max(1,Math.floor(t.W/f)),H:Math.max(1,Math.floor(t.H/f)),cs:dx*f,f};
+}
+
+function buildHeader(){
+  const t=TIFF; const nod=$('nodata').value.trim()||'-9999';
+  const g=effGridInfo(); const cs=g.cs;
+  // top-left outer corner stays fixed at (ox, oy); yll = oy - H2*cs
+  let ox=(t.ox!=null)?t.ox:0, oy=(t.oy!=null)?t.oy:(g.H*cs);
+  let x=ox, y=oy - g.H*cs;
+  const corner=$('corner').value;
+  let lines;
+  if(corner==='center'){ lines=['ncols        '+g.W,'nrows        '+g.H,'xllcenter    '+(x+cs/2),'yllcenter    '+(y+cs/2),'cellsize     '+cs,'NODATA_value '+nod]; }
+  else { lines=['ncols        '+g.W,'nrows        '+g.H,'xllcorner    '+x,'yllcorner    '+y,'cellsize     '+cs,'NODATA_value '+nod]; }
+  return lines.join('\n');
+}
+
+function updateOutSpec(){
+  const el=$('outSpec'); if(!TIFF){el.textContent='—';return;}
+  const g=effGridInfo(); const cells=g.W*g.H;
+  const dec=Math.max(0,Math.min(6,+$('dec').value||3));
+  const bytesPerCell=(dec+7); // ~ digits + sign + space
+  const estMB=cells*bytesPerCell/1048576;
+  let flag='',cls='muted';
+  if(estMB>450){flag=' ⛔ MELEBIHI batas ± 500 MB string — pasti gagal diimpor. Perkecil lagi.';cls='err';}
+  else if(estMB>120){flag=' ⚠ Cukup besar; impor bisa lambat. Pertimbangkan target lebih kecil.';cls='warn';}
+  else if(g.f>1){flag=' ✔ Ukuran aman untuk alat FLAC.';cls='ok';}
+  else {flag=' (native, tanpa perkecil)';cls=g.W*g.H>3e6?'warn':'muted';}
+  el.className=''; el.innerHTML='<span class="'+cls+'">Grid keluaran: <b>'+g.W+' × '+g.H+'</b> sel · faktor blok ×'+g.f+
+    ' · cellsize <b>'+fmt(g.cs,3)+' m</b> · perkiraan berkas <b>~'+(estMB<1?estMB.toFixed(2):Math.round(estMB))+' MB</b>.'+flag+'</span>';
+  const btn=$('convert'); if(btn)btn.disabled=(!TIFF||estMB>800);
+  const bd=$('convertDxf'); if(bd)bd.disabled=(!TIFF);
+}
+
+function convert(){
+  if(!TIFF||!RASTER){say('msg2','⚠ Muat GeoTIFF dahulu.','warn');return;}
+  const t=TIFF; const dec=Math.max(0,Math.min(6,+$('dec').value||3));
+  const nodOut=$('nodata').value.trim()||'-9999';
+  const srcNod=parseFloat($('srcNodata').value);
+  const st=computeStats(RASTER, isFinite(srcNod)?srcNod:t.nod);
+  let zs=parseFloat($('zscale').value); if(!isFinite(zs)||zs===0)zs=1;
+  let dz=parseFloat($('zshift').value); if(!isFinite(dz))dz=0;
+  const f=chooseFactor();
+  say('msg2','⏳ '+(f>1?('Perkecil ×'+f+' lalu m'):'M')+'enyusun .asc…'); setProg(5);
+  try{
+    const ds=downsampleGrid(RASTER,t.W,t.H,f,st.isNod);
+    const W2=ds.W,H2=ds.H,data=ds.data,NOD=ds.NOD;
+    const isNodOut = f>1 ? (v=>v===NOD) : st.isNod;
+    const parts=[buildHeader(),'\n'];
+    // rows: .asc row 0 = north (top). TIFF row 0 = top (oy is top-left). Keep order.
+    for(let yy=0;yy<H2;yy++){
+      const rowVals=new Array(W2);
+      for(let x=0;x<W2;x++){ const v=data[yy*W2+x];
+        rowVals[x]= isNodOut(v) ? nodOut : (v*zs+dz).toFixed(dec);
+      }
+      parts.push(rowVals.join(' ')); parts.push('\n');
+      if((yy&63)===0)setProg(5+90*yy/H2);
+    }
+    setProg(97);
+    const g=effGridInfo();
+    const blob=new Blob(parts,{type:'text/plain'});
+    const estMB=blob.size/1048576;
+    const base=(LAST_NAME||'dem').replace(/\.(tif|tiff)$/i,'');
+    const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=base+'.asc'; a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+    setProg(100);
+    let extra=''; if(estMB>450)extra=' <span class="err">⛔ '+estMB.toFixed(0)+' MB — masih terlalu besar untuk diimpor; perkecil lagi.</span>';
+    say('msg2','✔ Terunduh <b>'+esc(base)+'.asc</b> — '+W2+'×'+H2+' sel, cellsize '+fmt(g.cs,3)+' m'+(f>1?(' (downsample ×'+f+')'):'')+
+      ', NoData '+esc(nodOut)+(zs!==1?(', skala Z ×'+zs):'')+(dz!==0?(', geser Δz '+(dz>0?'+':'')+dz+' m'):'')+', ~'+(estMB<1?estMB.toFixed(2):estMB.toFixed(1))+' MB. Siap diimpor ke alat FLAC.'+extra, estMB>450?'warn':'ok');
+    setTimeout(()=>setProg(null),700);
+  }catch(e){ setProg(null); say('msg2','✗ Gagal: '+esc(e.message),'err'); console.error(e); }
+}
+
+/* ---- shared: downsampled grid + georef in world coords (cell centers) ---- */
+function getOutputGrid(){
+  const t=TIFF; const dec=Math.max(0,Math.min(6,+$('dec').value||3));
+  const nodOut=$('nodata').value.trim()||'-9999';
+  const srcNod=parseFloat($('srcNodata').value);
+  const st=computeStats(RASTER, isFinite(srcNod)?srcNod:t.nod);
+  let zs=parseFloat($('zscale').value); if(!isFinite(zs)||zs===0)zs=1;
+  let dz=parseFloat($('zshift').value); if(!isFinite(dz))dz=0;
+  const f=chooseFactor(); const ds=downsampleGrid(RASTER,t.W,t.H,f,st.isNod);
+  const isNodOut = f>1 ? (v=>v===ds.NOD) : st.isNod;
+  const cs=(t.dx!=null?t.dx:1)*f;
+  const ox=(t.ox!=null)?t.ox:0, oy=(t.oy!=null)?t.oy:(ds.H*cs); // top-left outer corner
+  return {W:ds.W,H:ds.H,data:ds.data,isNodOut,cs,ox,oy,zs,dz,dec,nodOut,f};
+}
+
+function convertDXF(){
+  if(!TIFF||!RASTER){say('msg2','⚠ Muat GeoTIFF dahulu.','warn');return;}
+  const kind=$('dxfKind').value; const g=getOutputGrid();
+  // world coords: X center col c = ox+(c+0.5)cs ; Y center row r(0=top) = oy-(r+0.5)cs
+  const X=c=>g.ox+(c+0.5)*g.cs, Y=r=>g.oy-(r+0.5)*g.cs;
+  const zt=v=>v*g.zs+g.dz;               // transform Z: scale then shift
+  const nd=v=>g.isNodOut(v);
+  const nf=v=>Number(v).toFixed(g.dec);
+  const cf=v=>Number(v).toFixed(3);
+  // rough entity count for guard
+  const est = kind==='point' ? g.W*g.H : (g.W-1)*(g.H-1);
+  if(est>800000){ say('msg2','⛔ Perkiraan '+est.toLocaleString()+' entity DXF — terlalu besar (berkas raksasa & impor IDW sangat lambat). Perkecil resolusi keluaran dahulu.','err'); return; }
+  say('msg2','⏳ Menyusun .dxf ('+(kind==='point'?'POINT':'3DFACE')+')…'); setProg(5);
+  try{
+    const parts=['0\nSECTION\n2\nENTITIES\n'];
+    let cnt=0;
+    if(kind==='point'){
+      for(let r=0;r<g.H;r++){
+        for(let c=0;c<g.W;c++){ const v=g.data[r*g.W+c]; if(nd(v))continue;
+          parts.push('0\nPOINT\n8\nDEM\n10\n'+cf(X(c))+'\n20\n'+cf(Y(r))+'\n30\n'+nf(zt(v))+'\n'); cnt++; }
+        if((r&31)===0)setProg(5+90*r/g.H);
+      }
+    } else { // 3DFACE mesh: quad per 2x2 block of valid cells, split into two triangles
+      for(let r=0;r<g.H-1;r++){
+        for(let c=0;c<g.W-1;c++){
+          const a=g.data[r*g.W+c], b=g.data[r*g.W+c+1], d=g.data[(r+1)*g.W+c], e=g.data[(r+1)*g.W+c+1];
+          if(nd(a)||nd(b)||nd(d)||nd(e))continue;
+          const xa=cf(X(c)),xb=cf(X(c+1)),ya=cf(Y(r)),yd=cf(Y(r+1));
+          const za=nf(zt(a)),zb=nf(zt(b)),zd=nf(zt(d)),ze=nf(zt(e));
+          // face 1: (c,r)(c+1,r)(c+1,r+1) ; face 2: (c,r)(c+1,r+1)(c,r+1)  (4th pt repeats 3rd)
+          parts.push('0\n3DFACE\n8\nDEM\n10\n'+xa+'\n20\n'+ya+'\n30\n'+za+'\n11\n'+xb+'\n21\n'+ya+'\n31\n'+zb+'\n12\n'+xb+'\n22\n'+yd+'\n32\n'+ze+'\n13\n'+xb+'\n23\n'+yd+'\n33\n'+ze+'\n');
+          parts.push('0\n3DFACE\n8\nDEM\n10\n'+xa+'\n20\n'+ya+'\n30\n'+za+'\n11\n'+xb+'\n21\n'+yd+'\n31\n'+ze+'\n12\n'+xa+'\n22\n'+yd+'\n32\n'+zd+'\n13\n'+xa+'\n23\n'+yd+'\n33\n'+zd+'\n');
+          cnt+=2;
+        }
+        if((r&31)===0)setProg(5+90*r/g.H);
+      }
+    }
+    parts.push('0\nENDSEC\n0\nEOF\n');
+    setProg(97);
+    const blob=new Blob(parts,{type:'application/dxf'}); const estMB=blob.size/1048576;
+    const base=(LAST_NAME||'dem').replace(/\.(tif|tiff)$/i,'');
+    const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=base+'.dxf'; a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+    setProg(100);
+    say('msg2','✔ Terunduh <b>'+esc(base)+'.dxf</b> — '+(kind==='point'?(cnt.toLocaleString()+' titik'):(cnt.toLocaleString()+' muka 3DFACE'))+
+      ', cellsize '+fmt(g.cs,3)+' m'+(g.f>1?(' (downsample ×'+g.f+')'):'')+(g.zs!==1?(', skala Z ×'+g.zs):'')+(g.dz!==0?(', geser Δz '+(g.dz>0?'+':'')+g.dz+' m'):'')+', ~'+(estMB<1?estMB.toFixed(2):estMB.toFixed(1))+' MB. Layer "DEM", koordinat dunia.','ok');
+    setTimeout(()=>setProg(null),700);
+  }catch(e){ setProg(null); say('msg2','✗ Gagal: '+esc(e.message),'err'); console.error(e); }
+}
+
+/* ================= wiring ================= */
+let LAST_NAME='';
+const drop=$('drop'), fileEl=$('file');
+drop.onclick=()=>fileEl.click();
+drop.ondragover=e=>{e.preventDefault();drop.classList.add('hot');};
+drop.ondragleave=()=>drop.classList.remove('hot');
+drop.ondrop=e=>{e.preventDefault();drop.classList.remove('hot'); const f=e.dataTransfer.files[0]; if(f){LAST_NAME=f.name; loadFile(f);}};
+fileEl.onchange=e=>{const f=e.target.files[0]; if(f){LAST_NAME=f.name; loadFile(f);}};
+$('band').onchange=()=>{ if(TIFF){ (async()=>{ const b=Math.min(+$('band').value||0,TIFF.spp-1); setProg(10);
+    await applyStride(TIFF,b);
+    const srcNod=parseFloat($('srcNodata').value); STATS=computeStats(RASTER,isFinite(srcNod)?srcNod:TIFF.nod); renderMeta(); drawPreview(); updateOutSpec(); setProg(null); })(); } };
+$('srcNodata').onchange=()=>{ if(RASTER){ const srcNod=parseFloat($('srcNodata').value); STATS=computeStats(RASTER,isFinite(srcNod)?srcNod:TIFF.nod); renderMeta(); drawPreview(); } };
+// downsampling controls
+function syncDsLabel(){ const m=$('dsMode').value, l=$('dsTargLbl'), i=$('dsTarg');
+  if(m==='auto'){l.textContent='Target maksimum sisi (kolom/baris)'; if(!i.value||+i.value<50)i.value='1500'; i.disabled=false;}
+  else if(m==='cell'){l.textContent='Cellsize keluaran (m)'; i.disabled=false; if(TIFF&&(!i.value))i.value=fmt((TIFF.dx||1)*Math.ceil(Math.max(TIFF.W,TIFF.H)/1500),2);}
+  else if(m==='factor'){l.textContent='Faktor downsample (×N)'; i.disabled=false; if(!i.value)i.value='4';}
+  else {l.textContent='(native — kontrol nonaktif)'; i.disabled=true;}
+  updateOutSpec();
+}
+$('dsMode').onchange=syncDsLabel;
+$('dsTarg').oninput=updateOutSpec;
+$('dec').oninput=updateOutSpec;
+$('convert').onclick=convert;
+$('convertDxf').onclick=convertDXF;
+$('copyHdr').onclick=()=>{ if(!TIFF){return;} const h=buildHeader();
+  navigator.clipboard&&navigator.clipboard.writeText(h).then(()=>say('msg2','✔ Header .asc disalin ke clipboard.','ok'),()=>say('msg2',h,'muted')); };
+
+/* ================= Bandingkan 2 .asc (DEM of Difference / cut-fill) ================= */
+function parseAsc(text){
+  const tok=String(text).trim().split(/\s+/); const h={}; let i=0;
+  const keys=['ncols','nrows','xllcorner','yllcorner','xllcenter','yllcenter','cellsize','nodata_value'];
+  while(i<tok.length){ const k=tok[i].toLowerCase(); if(keys.includes(k)){ h[k]=parseFloat(tok[i+1]); i+=2; } else break; }
+  const ncols=h.ncols|0, nrows=h.nrows|0, cs=h.cellsize;
+  if(!(ncols>0&&nrows>0&&cs>0)) throw new Error('Header .asc tidak valid (ncols/nrows/cellsize).');
+  const nod=(h.nodata_value!=null)?h.nodata_value:-9999;
+  const xll=(h.xllcorner!=null)?h.xllcorner:(h.xllcenter-cs/2);
+  const yll=(h.yllcorner!=null)?h.yllcorner:(h.yllcenter-cs/2);
+  const data=new Float32Array(ncols*nrows);
+  for(let p=0;p<ncols*nrows;p++){ const v=parseFloat(tok[i++]); data[p]= (v===nod||!isFinite(v)) ? Number.NEGATIVE_INFINITY : v; }
+  return {ncols,nrows,cs,nod,xll,yll,data};
+}
+// world coords of A cell (row r from top, col c): center
+const gcx=(g,c)=>g.xll+(c+0.5)*g.cs;
+const gcy=(g,r)=>g.yll+(g.nrows-1-r+0.5)*g.cs;   // row 0 = north
+// bilinear sample of grid g at world (X,Y); returns null if outside or touches NoData
+function sampleBil(g,X,Y){
+  const fc=(X-g.xll)/g.cs-0.5;                 // fractional col
+  const frB=(Y-g.yll)/g.cs-0.5;                // fractional row from bottom
+  const fr=(g.nrows-1)-frB;                     // fractional row from top
+  if(fc<-0.001||frB<-0.001||fc>g.ncols-0.999||frB>g.nrows-0.999) return null;
+  let c0=Math.floor(fc), r0=Math.floor(fr); const c1=Math.min(c0+1,g.ncols-1), r1=Math.min(r0+1,g.nrows-1);
+  c0=Math.min(Math.max(c0,0),g.ncols-1); r0=Math.min(Math.max(r0,0),g.nrows-1);
+  const q=(r,c)=>g.data[r*g.ncols+c];
+  const v00=q(r0,c0),v01=q(r0,c1),v10=q(r1,c0),v11=q(r1,c1);
+  if(![v00,v01,v10,v11].every(isFinite)) return null;
+  const tx=fc-Math.floor(fc), ty=fr-Math.floor(fr);
+  return v00*(1-tx)*(1-ty)+v01*tx*(1-ty)+v10*(1-tx)*ty+v11*tx*ty;
+}
+
+let CMP_A=null, CMP_B=null, CMP_DIFF=null;
+function cmpLoad(which,file){
+  const r=new FileReader();
+  r.onload=()=>{ try{ const g=parseAsc(r.result);
+      if(which==='A'){CMP_A=g;} else {CMP_B=g;}
+      const info=g.ncols+'×'+g.nrows+' sel · cellsize '+fmt(g.cs,3)+' m · X['+fmt(g.xll,0)+'…'+fmt(g.xll+g.ncols*g.cs,0)+'] Y['+fmt(g.yll,0)+'…'+fmt(g.yll+g.nrows*g.cs,0)+']';
+      $(which==='A'?'cmpAInfo':'cmpBInfo').innerHTML='<span style="color:#22c55e">✔ '+info+'</span>';
+      $('cmpRun').disabled=!(CMP_A&&CMP_B);
+      say('cmpMsg','',''); }
+    catch(e){ if(which==='A')CMP_A=null; else CMP_B=null; $(which==='A'?'cmpAInfo':'cmpBInfo').innerHTML='<span style="color:#ef4444">✗ '+esc(e.message)+'</span>'; $('cmpRun').disabled=!(CMP_A&&CMP_B); } };
+  r.readAsText(file);
+}
+$('cmpA').onchange=e=>{const f=e.target.files[0]; if(f)cmpLoad('A',f);};
+$('cmpB').onchange=e=>{const f=e.target.files[0]; if(f)cmpLoad('B',f);};
+
+function cmpCompare(){
+  if(!CMP_A||!CMP_B){ say('cmpMsg','⚠ Muat kedua berkas .asc dahulu.','warn'); return; }
+  const A=CMP_A,B=CMP_B; const tol=Math.max(0,parseFloat($('cmpTol').value)||0);
+  const dec=Math.max(0,Math.min(6,+$('cmpDec').value||3));
+  const aligned = (A.ncols===B.ncols&&A.nrows===B.nrows&&Math.abs(A.cs-B.cs)<1e-6&&Math.abs(A.xll-B.xll)<A.cs*0.01&&Math.abs(A.yll-B.yll)<A.cs*0.01);
+  say('cmpMsg','⏳ Menghitung beda'+(aligned?'':' (resample B→A bilinear)')+'…'); setProg(6);
+  try{
+    const NOD=Number.NEGATIVE_INFINITY; const diff=new Float32Array(A.ncols*A.nrows);
+    const cellArea=A.cs*A.cs;
+    let fillV=0,cutV=0, n=0,nUp=0,nDn=0, mn=Infinity,mx=-Infinity, sum=0,ssq=0, sumAbs=0, noOverlap=0;
+    for(let r=0;r<A.nrows;r++){
+      for(let c=0;c<A.ncols;c++){ const i=r*A.ncols+c; const a=A.data[i];
+        let d=NOD;
+        if(isFinite(a)){
+          let b;
+          if(aligned){ b=B.data[i]; }
+          else { const X=gcx(A,c), Y=gcy(A,r); const s=sampleBil(B,X,Y); b=(s==null)?NOD:s; }
+          if(isFinite(b)){ d=b-a; }
+          else noOverlap++;
+        }
+        diff[i]=d;
+        if(isFinite(d)){ n++; sum+=d; ssq+=d*d; sumAbs+=Math.abs(d); if(d<mn)mn=d; if(d>mx)mx=d;
+          if(Math.abs(d)>=tol){ if(d>0){fillV+=d*cellArea; nUp++;} else {cutV+=-d*cellArea; nDn++;} } }
+      }
+      if((r&31)===0)setProg(6+80*r/A.nrows);
+    }
+    if(!n) throw new Error('Tak ada sel yang bertampalan antara A dan B (periksa CRS/extent).');
+    const mean=sum/n, rms=Math.sqrt(ssq/n), mae=sumAbs/n, net=fillV-cutV;
+    CMP_DIFF={ncols:A.ncols,nrows:A.nrows,cs:A.cs,xll:A.xll,yll:A.yll,nod:-9999,data:diff,dec};
+    // preview (diverging)
+    cmpDraw(diff,A.ncols,A.nrows,Math.max(Math.abs(mn),Math.abs(mx))||1);
+    setProg(100); setTimeout(()=>setProg(null),500);
+    const fnum=(v,d)=>Number(v).toLocaleString('id-ID',{maximumFractionDigits:d==null?2:d});
+    $('cmpStat').style.display='block';
+    $('cmpStat').innerHTML=
+      '<b>Volume (koordinat dalam meter → m³)</b><br>'+
+      '• Timbunan / fill (Δz&gt;0): <b style="color:#f87171">'+fnum(fillV,0)+' m³</b> · '+fnum(nUp,0)+' sel<br>'+
+      '• Galian / cut (Δz&lt;0): <b style="color:#60a5fa">'+fnum(cutV,0)+' m³</b> · '+fnum(nDn,0)+' sel<br>'+
+      '• Net (fill − cut): <b>'+(net>=0?'+':'')+fnum(net,0)+' m³</b> ('+(net>=0?'penambahan':'pengurangan')+' material)<br>'+
+      '<hr style="border:none;border-top:1px solid var(--line);margin:6px 0">'+
+      '<b>Statistik Δz</b> (ambang |Δz|≥'+tol+' m untuk volume): min '+fnum(mn,dec)+' · maks '+fnum(mx,dec)+' · rerata '+fnum(mean,dec)+' · RMS '+fnum(rms,dec)+' · MAE '+fnum(mae,dec)+' m<br>'+
+      'Sel dibandingkan: '+fnum(n,0)+' · cellsize '+fmt(A.cs,3)+' m · luas/sel '+fnum(cellArea,2)+' m²'+(noOverlap?(' · '+fnum(noOverlap,0)+' sel A tanpa data B (dilewati)'):'')+
+      (aligned?' · grid identik (tanpa resample)':' · B di-resample bilinear ke grid A');
+    $('cmpDlAsc').disabled=false;
+    say('cmpMsg','✔ Selesai. Δz = B − A. Merah = timbunan, biru = galian.','ok');
+  }catch(e){ setProg(null); say('cmpMsg','✗ Gagal: '+esc(e.message),'err'); console.error(e); }
+}
+function cmpDraw(diff,W,H,absMax){
+  const cv=$('cmpCv'); const maxW=900; const scale=Math.min(1,maxW/W);
+  const cw=Math.max(1,Math.round(W*scale)), ch=Math.max(1,Math.round(H*scale));
+  cv.width=cw; cv.height=ch; const ctx=cv.getContext('2d'); const img=ctx.createImageData(cw,ch);
+  const col=(d)=>{ // diverging: blue(-) white(0) red(+)
+    const t=Math.max(-1,Math.min(1,d/absMax));
+    if(t>=0) return [255, Math.round(255*(1-t)), Math.round(255*(1-t))];       // white→red
+    return [Math.round(255*(1+t)), Math.round(255*(1+t)), 255];               // white→blue
+  };
+  for(let y=0;y<ch;y++)for(let x=0;x<cw;x++){ const sx=Math.min(W-1,Math.floor(x/scale)), sy=Math.min(H-1,Math.floor(y/scale));
+    const d=diff[sy*W+sx]; const p=(y*cw+x)*4;
+    if(!isFinite(d)){ img.data[p]=64;img.data[p+1]=72;img.data[p+2]=84; }
+    else { const rgb=col(d); img.data[p]=rgb[0];img.data[p+1]=rgb[1];img.data[p+2]=rgb[2]; }
+    img.data[p+3]=255; }
+  ctx.putImageData(img,0,0);
+  $('cmpLbl').textContent='Skala warna ±'+absMax.toFixed(2)+' m. Merah = naik (timbunan) · Biru = turun (galian) · Abu = NoData/di luar tampalan. '+W+'×'+H+' sel.';
+}
+function cmpDownloadAsc(){
+  if(!CMP_DIFF){ say('cmpMsg','⚠ Jalankan "Bandingkan" dahulu.','warn'); return; }
+  const g=CMP_DIFF, dec=g.dec, nod='-9999';
+  const hdr=['ncols        '+g.ncols,'nrows        '+g.nrows,'xllcorner    '+g.xll,'yllcorner    '+g.yll,'cellsize     '+g.cs,'NODATA_value '+nod].join('\n');
+  const parts=[hdr,'\n'];
+  for(let r=0;r<g.nrows;r++){ const row=new Array(g.ncols);
+    for(let c=0;c<g.ncols;c++){ const d=g.data[r*g.ncols+c]; row[c]= isFinite(d)? d.toFixed(dec) : nod; }
+    parts.push(row.join(' ')); parts.push('\n'); }
+  const blob=new Blob(parts,{type:'text/plain'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='beda_dz_B-A.asc'; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+  say('cmpMsg','✔ Terunduh <b>beda_dz_B-A.asc</b> (Δz = B − A, georeferensi grid A).','ok');
+}
+$('cmpRun').onclick=cmpCompare;
+$('cmpDlAsc').onclick=cmpDownloadAsc;
+
+/* ================= Gabung 2 .asc (mosaic) ================= */
+let MRG_A=null, MRG_B=null, MRG_OUT=null;
+function mrgLoad(which,file){
+  const r=new FileReader();
+  r.onload=()=>{ try{ const g=parseAsc(r.result);
+      if(which==='A')MRG_A=g; else MRG_B=g;
+      const info=g.ncols+'×'+g.nrows+' sel · cellsize '+fmt(g.cs,3)+' m · X['+fmt(g.xll,0)+'…'+fmt(g.xll+g.ncols*g.cs,0)+'] Y['+fmt(g.yll,0)+'…'+fmt(g.yll+g.nrows*g.cs,0)+']';
+      $(which==='A'?'mrgAInfo':'mrgBInfo').innerHTML='<span style="color:#22c55e">✔ '+info+'</span>';
+      $('mrgRun').disabled=!(MRG_A&&MRG_B); say('mrgMsg','',''); }
+    catch(e){ if(which==='A')MRG_A=null; else MRG_B=null; $(which==='A'?'mrgAInfo':'mrgBInfo').innerHTML='<span style="color:#ef4444">✗ '+esc(e.message)+'</span>'; $('mrgRun').disabled=!(MRG_A&&MRG_B); } };
+  r.readAsText(file);
+}
+$('mrgA').onchange=e=>{const f=e.target.files[0]; if(f)mrgLoad('A',f);};
+$('mrgB').onchange=e=>{const f=e.target.files[0]; if(f)mrgLoad('B',f);};
+
+function mrgMerge(){
+  if(!MRG_A||!MRG_B){ say('mrgMsg','⚠ Muat kedua berkas .asc dahulu.','warn'); return; }
+  const A=MRG_A,B=MRG_B, cs=A.cs, pol=$('mrgPolicy').value;
+  const dec=Math.max(0,Math.min(6,+$('mrgDec').value||3));
+  // union extent in world coords
+  const xmin=Math.min(A.xll,B.xll), xmax=Math.max(A.xll+A.ncols*cs, B.xll+B.ncols*cs);
+  const ymin=Math.min(A.yll,B.yll), ymax=Math.max(A.yll+A.nrows*cs, B.yll+B.nrows*cs);
+  // snap output lower-left to A's grid phase so A cells align exactly
+  const xll=A.xll-Math.ceil((A.xll-xmin)/cs-1e-6)*cs;
+  const yll=A.yll-Math.ceil((A.yll-ymin)/cs-1e-6)*cs;
+  const ncols=Math.round((xmax-xll)/cs+1e-6), nrows=Math.round((ymax-yll)/cs+1e-6);
+  if(ncols*nrows>40e6){ say('mrgMsg','⛔ Grid gabungan '+ncols+'×'+nrows+' ('+(ncols*nrows/1e6).toFixed(0)+' juta sel) terlalu besar. Perkecil resolusi salah satu DEM dahulu.','err'); return; }
+  say('mrgMsg','⏳ Menggabung ('+ncols+'×'+nrows+')…'); setProg(6);
+  try{
+    const NOD=Number.NEGATIVE_INFINITY; const out=new Float32Array(ncols*nrows);
+    const outG={ncols,nrows,cs,xll,yll};
+    let nA=0,nB=0,nBoth=0,nTot=0, mn=Infinity,mx=-Infinity;
+    for(let r=0;r<nrows;r++){
+      for(let c=0;c<ncols;c++){ const Xc=gcx(outG,c), Yc=gcy(outG,r);
+        const a=sampleBil(A,Xc,Yc), b=sampleBil(B,Xc,Yc);
+        let v=NOD;
+        const ha=(a!=null), hb=(b!=null);
+        if(ha&&hb){ nBoth++;
+          v = pol==='aover'?a : pol==='bover'?b : pol==='mean'?(a+b)/2 : pol==='max'?Math.max(a,b) : Math.min(a,b); }
+        else if(ha){ v=a; nA++; }
+        else if(hb){ v=b; nB++; }
+        out[r*ncols+c]=v;
+        if(isFinite(v)){ nTot++; if(v<mn)mn=v; if(v>mx)mx=v; }
+      }
+      if((r&31)===0)setProg(6+80*r/nrows);
+    }
+    if(!nTot) throw new Error('Hasil kosong — periksa CRS/extent kedua DEM.');
+    MRG_OUT={ncols,nrows,cs,xll,yll,nod:-9999,data:out,dec};
+    mrgDraw(out,ncols,nrows,mn,mx);
+    setProg(100); setTimeout(()=>setProg(null),500);
+    const fnum=(v,d)=>Number(v).toLocaleString('id-ID',{maximumFractionDigits:d==null?2:d});
+    $('mrgStat').style.display='block';
+    $('mrgStat').innerHTML=
+      '<b>Grid gabungan:</b> '+ncols+' × '+nrows+' sel · cellsize '+fmt(cs,3)+' m<br>'+
+      'Extent: X['+fnum(xll,0)+' … '+fnum(xll+ncols*cs,0)+'] · Y['+fnum(yll,0)+' … '+fnum(yll+nrows*cs,0)+']<br>'+
+      'Elevasi: '+fnum(mn,dec)+' … '+fnum(mx,dec)+' m · sel valid '+fnum(nTot,0)+'<br>'+
+      'Sel hanya-A '+fnum(nA,0)+' · hanya-B '+fnum(nB,0)+' · bertampalan '+fnum(nBoth,0)+' (aturan: '+$('mrgPolicy').selectedOptions[0].text+')';
+    $('mrgDlAsc').disabled=false;
+    say('mrgMsg','✔ Selesai. Grid keluaran selaras dengan grid A.','ok');
+  }catch(e){ setProg(null); say('mrgMsg','✗ Gagal: '+esc(e.message),'err'); console.error(e); }
+}
+function mrgDraw(data,W,H,mn,mx){
+  const cv=$('mrgCv'); const maxW=900; const scale=Math.min(1,maxW/W);
+  const cw=Math.max(1,Math.round(W*scale)), ch=Math.max(1,Math.round(H*scale));
+  cv.width=cw; cv.height=ch; const ctx=cv.getContext('2d'); const img=ctx.createImageData(cw,ch);
+  const rng=(mx-mn)||1;
+  for(let y=0;y<ch;y++)for(let x=0;x<cw;x++){ const sx=Math.min(W-1,Math.floor(x/scale)), sy=Math.min(H-1,Math.floor(y/scale));
+    const v=data[sy*W+sx]; const p=(y*cw+x)*4;
+    if(!isFinite(v)){ img.data[p]=64;img.data[p+1]=72;img.data[p+2]=84; }
+    else { const g=Math.round(255*(v-mn)/rng); img.data[p]=g;img.data[p+1]=g;img.data[p+2]=g; }
+    img.data[p+3]=255; }
+  ctx.putImageData(img,0,0);
+  $('mrgLbl').textContent='Rendah = gelap, tinggi = terang · Abu tua = NoData. '+W+'×'+H+' sel.';
+}
+function mrgDownloadAsc(){
+  if(!MRG_OUT){ say('mrgMsg','⚠ Jalankan "Gabungkan" dahulu.','warn'); return; }
+  const g=MRG_OUT, dec=g.dec, nod='-9999';
+  const hdr=['ncols        '+g.ncols,'nrows        '+g.nrows,'xllcorner    '+g.xll,'yllcorner    '+g.yll,'cellsize     '+g.cs,'NODATA_value '+nod].join('\n');
+  const parts=[hdr,'\n'];
+  for(let r=0;r<g.nrows;r++){ const row=new Array(g.ncols);
+    for(let c=0;c<g.ncols;c++){ const v=g.data[r*g.ncols+c]; row[c]= isFinite(v)? v.toFixed(dec) : nod; }
+    parts.push(row.join(' ')); parts.push('\n'); }
+  const blob=new Blob(parts,{type:'text/plain'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='gabung_A_B.asc'; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+  say('mrgMsg','✔ Terunduh <b>gabung_A_B.asc</b> (grid gabungan, georeferensi selaras A).','ok');
+}
+$('mrgRun').onclick=mrgMerge;
+$('mrgDlAsc').onclick=mrgDownloadAsc;
+</script>
+</body></html>
