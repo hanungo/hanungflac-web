@@ -2,9 +2,7 @@
   "routes": [
     { "route": "/.auth/login/github", "statusCode": 404 },
     { "route": "/*", "allowedRoles": ["authenticated"] }
-  ],
-  "responseOverrides": {
-    "401": { "statusCode": 302, "redirect": "/.auth/login/aad" }
+  ]
   },
   "globalHeaders": {
     "X-Robots-Tag": "noindex, nofollow",
